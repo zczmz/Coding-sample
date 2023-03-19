@@ -1,0 +1,377 @@
+---
+title: "721 code"
+author: "Chuzhu Zhong"
+date: ""
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(haven)
+library(tidyverse)
+library(zoo)
+library(plyr)
+library(tidyLPA)
+library(nnet)
+library(mclust)
+library(ggplot2)
+library(ROCR)
+library(glmnet)
+library(regclass)
+library(caret)
+```
+
+Read data
+```{r}
+data_tracker <- read_dta("Data/trk2020tr_r.dta")
+data_lb <- read_sas("Data/h20lb_r.sas7bdat")
+```
+
+Clean and combine data
+```{r}
+data_tracker<-data_tracker[,c(1,2,4,5,11,12,25,30)]
+data_lb<-data_lb[,c(1,2,12:32,90:104,139:163,194:224)]
+data<-left_join(data_lb,data_tracker,by=c("HHID","PN"))
+```
+
+Missing value
+```{r}
+data<-data%>%
+  filter(!is.na(BIRTHYR))
+data<-data%>%
+  filter(!is.na(GENDER))
+data<-data%>%
+  filter(HISPANIC!=0)
+#83 rows removed
+data<-data%>%
+  filter(RACE!=0)
+#57 rows removed
+data<-data%>%
+  filter(USBORN!=9)
+#6 rows removed
+
+data_Q1<-data[,c(3:23)]
+m_Q1<-as.data.frame(apply(X=is.na(data_Q1), MARGIN=1, FUN=sum))
+colnames(m_Q1)<-"num_m_1"
+data_Q2<-data[,c(24:38)]
+m_Q2<-as.data.frame(apply(X=is.na(data_Q2), MARGIN=1, FUN=sum))
+colnames(m_Q2)<-"num_m_2"
+data_Q3<-data[,c(39:63)]
+m_Q3<-as.data.frame(apply(X=is.na(data_Q3), MARGIN=1, FUN=sum))
+colnames(m_Q3)<-"num_m_3"
+data_Q4<-data[,c(64:94)]
+m_Q4<-as.data.frame(apply(X=is.na(data_Q4), MARGIN=1, FUN=sum))
+colnames(m_Q4)<-"num_m_4"
+data<-cbind(data,m_Q1,m_Q2,m_Q3,m_Q4)
+data<-data%>%
+  filter(num_m_1<=11 & num_m_2<=8 & num_m_3<=13 & num_m_4<=16)
+#4456 rows left
+
+#Imputation
+data_m_1<-data[,c(3:23)]
+data_m_1[]<-t(na.aggregate(t(data_m_1)))
+data_m_1<-round(data_m_1,digits = 0)
+data_m_2<-data[,c(24:38)]
+data_m_2[]<-t(na.aggregate(t(data_m_2)))
+data_m_2<-round(data_m_2,digits = 0)
+data_m_3<-data[,c(39:63)]
+data_m_3[]<-t(na.aggregate(t(data_m_3)))
+data_m_3<-round(data_m_3,digits = 0)
+data_m_4<-data[,c(64:94)]
+data_m_4[]<-t(na.aggregate(t(data_m_4)))
+data_m_4<-round(data_m_4,digits = 0)
+
+data<-data[,c(1,2,95:104)]
+data<-cbind(data,data_m_1,data_m_2,data_m_3,data_m_4)
+```
+
+Recode variables
+```{r}
+#Age: continuous
+data$age<-2021-data$BIRTHYR
+
+#Gender: 1 as female, 2 as male
+data$gender<-if_else(data$GENDER==1,2,1)
+
+#Degree: 1 as Below BA, 2 as BA and above
+data$degree<-if_else(data$DEGREE==9 | data$DEGREE<=3,1,2)
+
+#Hispanic: 1 as Hispanic, 2 as Non-Hispanic
+data$hispanic<-if_else(data$HISPANIC==5,2,1)
+
+#Race: 1 as Black and other, 2 as White
+data$race<-if_else(data$RACE>1,1,2)
+
+#USBORN: 1 as Born in a foreign country, 2 as Born in US
+data$usborn<-if_else(data$USBORN==1,2,1)
+
+data<-data[,-c(1:8)]
+```
+
+Demographics
+```{r}
+data$comp<-if_else(data$num_m_1==0 & data$num_m_2==0 & data$num_m_3==0 & data$num_m_4==0, 1,0)
+data$degree<-as.factor(data$degree)
+data$gender<-as.factor(data$gender)
+data$hispanic<-as.factor(data$hispanic)
+data$race<-as.factor(data$race)
+data$usborn<-as.factor(data$usborn)
+mod1<-glm(comp~age+degree+gender+hispanic+race+usborn,data=data,family = "binomial")
+summary(mod1)
+
+data$m1.yhat <- predict(mod1, data, type = "response")
+m1.scores <- prediction(data$m1.yhat,data$comp)
+plot(performance(m1.scores, "tpr", "fpr"), col = "red")
+abline(0,1, lty = 8, col = "grey")
+auc(roc(m1.scores@predictions[[1]],m1.scores@labels[[1]]))
+
+data<-data[,-c(104)]
+```
+
+Reverse coding
+```{r}
+###Smaller number = more positive
+#Q1: No question being reverse coded
+
+#Q18: Items g, h, i being reverse coded
+r_Q2<-c("RLB018G","RLB018H","RLB018I")
+data[r_Q2]<-7-data[r_Q2]
+
+#Q26: Items a, b, e, i, j, l, m, n, o, r, s, w being reverse coded
+r_Q3<-c("RLB026A","RLB026B","RLB026E","RLB026I","RLB026J","RLB026L","RLB026M","RLB026N","RLB026O","RLB026R","RLB026S","RLB026W")
+data[r_Q3]<-6-data[r_Q3]
+
+#Q31: Items c, d, h, l, v, x being reverse coded
+r_Q4<-c("RLB031C","RLB031D","RLB031H","RLB031L","RLB031V","RLB031X")
+data[r_Q4]<-5-data[r_Q4]
+```
+
+Satisficing: Nondifferentiation
+```{r}
+#Counting continuously repeated numbers in each row
+for(i in 5:95) { 
+ nam <- paste("D", i, sep = "")
+ data[nam]<-assign(nam, data[,i]-data[,i+1])
+}
+
+#Q1: D6-D25
+most_consecutive_val = function(x, val = 0) {
+  with(rle(x), max(lengths[values == val]))
+}
+data_1<-as.data.frame(apply(data[-c(1:103,124:194)], MARGIN = 1, most_consecutive_val))
+colnames(data_1)<-"nondiff1"
+data_1$nondiff1[data_1$nondiff1=="-Inf"]<-0
+data_1$nondiff1<-data_1$nondiff1+1
+
+#Q2: D27-D40
+data_2<-as.data.frame(apply(data[-c(1:124,139:194)], MARGIN = 1, most_consecutive_val))
+colnames(data_2)<-"nondiff2"
+data_2$nondiff2[data_2$nondiff2=="-Inf"]<-0
+data_2$nondiff2<-data_2$nondiff2+1
+
+#Q3: D42-D65
+data_3<-as.data.frame(apply(data[-c(1:139,164:194)], MARGIN = 1, most_consecutive_val))
+colnames(data_3)<-"nondiff3"
+data_3$nondiff3<-data_3$nondiff3+1
+
+#Q4: D67-D96
+data_4<-as.data.frame(apply(data[-c(1:164)], MARGIN = 1, most_consecutive_val))
+colnames(data_4)<-"nondiff4"
+data_4$nondiff4<-data_4$nondiff4+1
+
+data<-cbind(data,data_1,data_2,data_3,data_4)
+```
+
+Satisficing: Low extreme response
+```{r}
+#How many 1s in each row
+#Q1
+data$lext1 <- rowSums(data[-c(1:5,27:198)] == 1)
+
+#Q2
+data$lext2 <- rowSums(data[-c(1:26,42:199)] == 1)
+
+#Q3
+data$lext3 <- rowSums(data[-c(1:41,67:200)] == 1)
+
+#Q4
+data$lext4 <- rowSums(data[-c(1:66,98:201)] == 1)
+```
+
+Satisficing: High extreme response
+```{r}
+#How many the highest levels in each row
+#Q1
+data$hext1 <- rowSums(data[-c(1:5,27:202)] == 7)
+
+#Q2
+data$hext2 <- rowSums(data[-c(1:26,42:203)] == 6)
+
+#Q3
+data$hext3 <- rowSums(data[-c(1:41,67:204)] == 5)
+
+#Q4
+data$hext4 <- rowSums(data[-c(1:66,98:205)] == 4)
+```
+
+Satisficing: Midpoint response
+```{r}
+#Q1
+data$mid1<-rowSums(data[-c(1:5,27:206)] == 4)
+
+#Q2
+data$mid2 <- round(rowSums(data[-c(1:26,42:207)] == 3 | data[-c(1:26,42:207)] == 4)/2,digits=0)
+
+#Q3
+data$mid3<-rowSums(data[-c(1:41,67:208)] == 3)
+
+#Q4
+data$mid4<-round(rowSums(data[-c(1:66,98:209)] == 2 | data[-c(1:66,98:209)] == 3)/2, digits=0)
+```
+
+Satisficing: Directional response
+```{r}
+#Q1
+data$d_l1<-rowSums(data[-c(1:5,27:210)] < 4)
+data$d_h1<-rowSums(data[-c(1:5,27:211)] > 4)
+data$direct1<-abs(data$d_h1-data$d_l1)
+
+#Q2
+data$d_l2<-rowSums(data[-c(1:26,42:213)] < 4)
+data$d_h2<-rowSums(data[-c(1:26,42:214)] >= 4)
+data$direct2<-abs(data$d_h2-data$d_l2)
+
+#Q3
+data$d_l3<-rowSums(data[-c(1:41,67:216)] < 3)
+data$d_h3<-rowSums(data[-c(1:41,67:217)] >3)
+data$direct3<-abs(data$d_h3-data$d_l3)
+
+#Q4
+data$d_l4<-rowSums(data[-c(1:66,98:219)] < 3)
+data$d_h4<-rowSums(data[-c(1:66,98:220)] >=3)
+data$direct4<-abs(data$d_h4-data$d_l4)
+
+data<-data[,c(195:210,213,216,219,222,97:102)]
+```
+
+Check correlation
+```{r}
+cor(data[,c(1:4)])
+cor(data[,c(5:8)])
+cor(data[,c(9:12)])
+cor(data[,c(13:16)])
+cor(data[,c(17:20)])
+#None of them shows a strong correlation, so there will be 20 variables in the LPA analysis
+```
+
+LPA analysis
+```{r}
+set.seed(1)
+m2<-data%>%
+    select(nondiff1,nondiff2,nondiff3,nondiff4,lext1,lext2,lext3,lext4,hext1,hext2,hext3,hext4,mid1,mid2,mid3,mid4,direct1,direct2,direct3,direct4) %>%
+    single_imputation() %>%
+    estimate_profiles(2)
+
+m3<-data%>%
+    select(nondiff1,nondiff2,nondiff3,nondiff4,lext1,lext2,lext3,lext4,hext1,hext2,hext3,hext4,mid1,mid2,mid3,mid4,direct1,direct2,direct3,direct4) %>%
+    single_imputation() %>%
+    estimate_profiles(3)
+
+m4<-data%>%
+    select(nondiff1,nondiff2,nondiff3,nondiff4,lext1,lext2,lext3,lext4,hext1,hext2,hext3,hext4,mid1,mid2,mid3,mid4,direct1,direct2,direct3,direct4) %>%
+    single_imputation() %>%
+    estimate_profiles(4)
+
+m5<-data%>%
+    select(nondiff1,nondiff2,nondiff3,nondiff4,lext1,lext2,lext3,lext4,hext1,hext2,hext3,hext4,mid1,mid2,mid3,mid4,direct1,direct2,direct3,direct4) %>%
+    single_imputation() %>%
+    estimate_profiles(5)
+
+m2
+m3
+m4
+m5
+
+get_fit(m2)
+get_fit(m3)
+get_fit(m4)
+get_fit(m5)
+
+#VLMR likelihood ratio test
+calc_lrt(4456, -227157.2, 61, 2, -224124.3, 82, 3)
+calc_lrt(4456, -224124.3, 82, 3, -219229.8, 103, 4)
+calc_lrt(4456, -219229.8, 103, 4, -217902.5, 124, 5)
+
+data_final<-get_data(m3)
+```
+
+Plot LPA
+```{r}
+a<-get_estimates(m3)
+a<-a%>%
+  filter(Category=="Means")
+a$Class<-as.factor(a$Class)
+a$n<-rep(c(21,15,25,31),time=15)
+a$mean<-a$Estimate/a$n
+
+a%>%
+  ggplot(aes(Parameter,mean,group=Class,color=Class))+
+  geom_line(size=1)+
+  geom_point(size=2)+
+  scale_x_discrete(labels=c("Activity Nondiff","Attitude Nondiff","Emotion Nondiff","Personality Nondiff","Activity Low Extreme","Attitude Low Extreme","Emotion Low Extreme","Personality Low Extreme","Activity High Extreme","Attitude High Extreme","Emotion High Extreme","Personality High Extreme","Activity Mid","Attitude Mid","Emotion Mid","Personality Mid","Activity Direct","Attitude Direct","Emotion Direct","Personality Direct"))+
+  labs(x=NULL,y="Standardized Estimated Mean")+
+  theme(axis.text.x = element_text(angle=45,hjust=1),legend.position = "top")
+```
+
+Multinomial regression and cross validation
+```{r}
+data_final<-cbind(data_final$Class,data)
+data_final$class<- data_final$`data_final$Class`
+data_final<-data_final[,c(22:28)]
+data_final$id<-1:nrow(data_final)
+
+#Train and test
+data_c1<-data_final%>%
+  filter(class==1)
+data_c2<-data_final%>%
+  filter(class==2)
+data_c3<-data_final%>%
+  filter(class==3)
+
+set.seed(1)
+train_c1<-data_c1[sample(nrow(data_c1), 489*0.7), ]
+train_c2<-data_c2[sample(nrow(data_c2), 2094*0.7), ]
+train_c3<-data_c3[sample(nrow(data_c3), 1873*0.7), ]
+train<-rbind(train_c1,train_c2,train_c3)
+test<-subset(data_final, !(id %in% train$id))
+train<-train[,-c(8)]
+test<-test[,-c(8)]
+
+#Find the best model in the train dataset
+train$class <- as.factor(train$class)
+m_mod1 <- multinom(class~age+gender+degree+hispanic+race+usborn, data = train)
+summary(m_mod1)
+modselect<-step(m_mod1)
+
+#Final model
+m_mod<-multinom(class~gender+race+usborn+degree, data = train)
+summary(m_mod)
+
+#Cross-validation
+set.seed(1)
+specifications<-trainControl(method="cv",number=10,classProbs=T)
+levels(train$class) <- c("first_class", "second_class","third_class")
+cvmod<-train(class~gender+race+usborn+degree, data = train,method="multinom",trControl=specifications)
+test$predictions<-predict(cvmod,newdata=test)
+test$predictions<-recode(test$predictions,"first_class"=1, "second_class"=2,"third_class"=3)
+test$class<-as.factor(test$class)
+test$predictions<-as.factor(test$predictions)
+confusionMatrix(test$predictions,test$class)
+```
+
